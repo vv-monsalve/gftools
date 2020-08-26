@@ -27,6 +27,10 @@ Check a font family against the same family hosted on Google Fonts:
 
     gftools qa [fonts.ttf] -gfb -a -o qa
 
+Check a variable font family against the same family as static fonts:
+
+    gftools qa -f [vf_fonts] -fb [static_fonts] --diffenator --diffbrowsers -o ~/path/out
+
 Add a DSIG table to a font
 
     gftools fix-dsig font1.ttf
@@ -34,6 +38,10 @@ Add a DSIG table to a font
 Fix a non hinted font
 
     gftools fix-nonhinting font_in.ttf font_out.ttf
+
+Package and PR a family update to google/fonts. Much more detailed [documentation](./docs/gftools-packager).
+
+    gftools packager "Family Sans" path/to/local/google/fonts -py
 
 ## Installation
 
@@ -57,10 +65,11 @@ Make sure the submodule is up to date by running:
 
     git submodule update --init --recursive
 
+`gftool packager` needs the command line `git` program in a version >= Git 2.5 (Q2 2015) in order to perform a shallow clone (`--depth 1`) of the font upstream repository and branch. This is not supported by pygit2/libgit2 yet.
 
 ### Google Fonts API Key
 
-In order to use the scripts **gftools qa** and **gftools family-html-snippet**, you will need to generate a Google Fonts api key, https://developers.google.com/fonts/. You will then need to create a new file located on your system at `~/.gf-api-key`, which contains the following:
+In order to use the scripts **gftools qa** and **gftools family-html-snippet**, you will need to generate a Google Fonts api key, https://developers.google.com/fonts/. You will then need to create a new text file located on your system at `~/.gf-api-key` (where ~ is your home directory), which contains the following:
 
 ```
 [Credentials]

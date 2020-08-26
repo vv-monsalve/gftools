@@ -29,7 +29,7 @@ with open('README.md') as f:
 
 setup(
     name="gftools",
-    version='0.3.2',
+    version='0.4.2',
     url='https://github.com/googlefonts/tools/',
     description='Google Fonts Tools is a set of command-line tools'
                 ' for testing font projects',
@@ -49,7 +49,8 @@ setup(
     package_data={'gftools.util': ["GlyphsInfo/*.xml"],
                   'gftools': [
                       "encodings/*.nam",
-                      "encodings/GF Glyph Sets/*.nam"
+                      "encodings/GF Glyph Sets/*.nam",
+                      'template.upstream.yaml'
                   ]
                  },
     scripts=gftools_scripts(),
@@ -76,11 +77,14 @@ setup(
         'absl-py',
         'glyphsLib',
         'PyGithub',
-        'pillow',
+        'pillow==7.0.0',
         'protobuf',
         'requests',
         'tabulate',
         'unidecode',
         'opentype-sanitizer',
+        'vttlib',
+        'pygit2',
+        'strictyaml',
     ]
     )

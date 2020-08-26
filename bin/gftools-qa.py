@@ -26,7 +26,6 @@ import shutil
 import os
 from glob import glob
 import subprocess
-import tempfile
 import logging
 from uuid import uuid4
 import re
@@ -54,7 +53,7 @@ except ModuleNotFoundError:
         "dependencies. To install the dependencies, see the ReadMe, "
         "https://github.com/googlefonts/gftools#installation"))
 
-__version__ = "2.0.2"
+__version__ = "2.1.3"
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
@@ -76,24 +75,56 @@ class FontQA:
     GFR_URL = "http://35.238.63.0/"
 
     def __init__(self, fonts, fonts_before=None, out="out"):
-        self._fonts = fonts
-        self._instances = self.font_instances(self._fonts)
-        self._fonts_before = fonts_before
-        self._instances_before = self.font_instances(self._fonts_before)
-        self._shared_instances = self._get_shared_instances()
-        self._bstack_auth = load_browserstack_credentials()
-        self._out = out
-        mkdir(self._out)
+        self.fonts = fonts
+        self.fonts_before = fonts_before
 
-    def _get_shared_instances(self):
-        if not self._fonts_before:
+        self.instances = self._instances_in_fonts(self.fonts)
+        self.instances_before = self._instances_in_fonts(self.fonts_before)
+        self.matching_instances = self._matching_instances()
+
+        self._bstack_auth = load_browserstack_credentials()
+        self.out = out
+
+    def _instances_in_fonts(self, ttfonts):
+        """Get all font instances from a collection of fonts.
+
+        This function works for both a static and variable font collections.
+        If a font is variable, it will retrieve the font's instances
+        using the fvar table. If a font is static, it will only return a
+        single instance by using the font's filename.
+        """
+        if not ttfonts:
+            return None
+        results = {}
+        for ttfont in ttfonts:
+            if "fvar" in ttfont:
+                for instance in ttfont['fvar'].instances:
+                    nameid = instance.subfamilyNameID
+                    name = ttfont['name'].getName(nameid, 3, 1, 1033).toUnicode()
+                    name = name.replace(" ", "")
+                    results[name] = {
+                        "coordinates": instance.coordinates,
+                        "filename": ttfont.reader.file.name
+                    }
+            else:
+                filename = os.path.basename(ttfont.reader.file.name)
+                name = filename.split("-")[1]
+                name = re.sub(".ttf|.otf", "", name)
+                results[name] = {
+                    "coordinates": {"wght": ttfont['OS/2'].usWeightClass},
+                    "filename": ttfont.reader.file.name
+                }
+        return results
+
+    def _matching_instances(self):
+        if not self.fonts_before:
             logger.info(
-                "No regression checks possible " "since there are fonts before == None"
+                "No regression checks possible since there are no previous fonts."
             )
             return None
-        shared = set(self._instances_before.keys()) & set(self._instances.keys())
-        new = set(self._instances.keys()) - set(self._instances_before.keys())
-        missing = set(self._instances_before.keys()) - set(self._instances.keys())
+        shared = set(self.instances_before.keys()) & set(self.instances.keys())
+        new = set(self.instances.keys()) - set(self.instances_before.keys())
+        missing = set(self.instances_before.keys()) - set(self.instances.keys())
         if new:
             logger.warning("New fonts: {}".format(", ".join(new)))
         if missing:
@@ -103,45 +134,20 @@ class FontQA:
                 (
                     "Cannot find matching fonts!\n"
                     "fonts: [{}]\nfonts_before: [{}]".format(
-                        ", ".join(set(self._instances.keys())),
-                        ", ".join(set(self._instances_before.keys()))
+                        ", ".join(set(self.instances.keys())),
+                        ", ".join(set(self.instances_before.keys()))
                      )
                 )
             )
         return shared
 
-    def font_instances(self, ttfonts):
-        if not ttfonts:
-            return None
-        styles = {}
-        for ttfont in ttfonts:
-            ttfont_styles = self.instances_in_font(ttfont)
-            for style in ttfont_styles:
-                styles[style] = ttfont.reader.file.name
-        return styles
-
-    def instances_in_font(self, ttfont):
-        styles = []
-        if "fvar" in ttfont.keys():
-            for instance in ttfont["fvar"].instances:
-                nameid = instance.subfamilyNameID
-                name = ttfont["name"].getName(nameid, 3, 1, 1033).toUnicode()
-                name = name.replace(" ", "")
-                styles.append(name)
-        else:
-            filename = os.path.basename(ttfont.reader.file.name)
-            style = filename.split("-")[1]
-            style = re.sub(".ttf|.otf", "", style)
-            styles.append(style)
-        return styles
-
     def diffenator(self, **kwargs):
         logger.info("Running Diffenator")
-        dst = os.path.join(self._out, "Diffenator")
+        dst = os.path.join(self.out, "Diffenator")
         mkdir(dst)
-        for style in self._shared_instances:
-            font_before = DFont(self._instances_before[style])
-            font_after = DFont(self._instances[style])
+        for style in self.matching_instances:
+            font_before = DFont(self.instances_before[style]['filename'])
+            font_after = DFont(self.instances[style]['filename'])
             out = os.path.join(dst, style)
             if font_after.is_variable and not font_before.is_variable:
                 font_after.set_variations_from_static(font_before)
@@ -150,10 +156,9 @@ class FontQA:
                 font_before.set_variations_from_static(font_after)
 
             elif font_after.is_variable and font_before.is_variable:
-                # TODO get wdth and slnt axis vals
-                variations = {"wght": font_before.ttfont["OS/2"].usWeightClass}
-                font_after.set_variations(variations)
-                font_before.set_variations(variations)
+                coordinates = self.instances_before[style]['coordinates']
+                font_after.set_variations(coordinates)
+                font_before.set_variations(coordinates)
 
             # TODO add settings
             diff = DiffFonts(font_before, font_after, {"render_diffs": True})
@@ -175,14 +180,15 @@ class FontQA:
                     "See https://github.com/googlefonts/"
                     "diffbrowsers#installation on how to add them.")
             return
-        dst = os.path.join(self._out, "Diffbrowsers")
+        dst = os.path.join(self.out, "Diffbrowsers")
         mkdir(dst)
         browsers_to_test = test_browsers["vf_browsers"]
-        fonts = [(k, self._instances_before[k], self._instances[k])
-                 for k in self._shared_instances]
+        fonts = [(k, self.instances_before[k]['filename'],
+                     self.instances[k]['filename']) for k in self.matching_instances]
         font_groups = self.chunkify(sorted(fonts), 4)
         for group in font_groups:
-            dir_name = "_".join([i[0] for i in group])
+            styles = [i[0] for i in group]
+            dir_name = "_".join(styles)
             fonts_before = [i[1] for i in group]
             fonts_after = [i[2] for i in group]
             out = os.path.join(dst, dir_name)
@@ -193,18 +199,18 @@ class FontQA:
                 browsers=browsers_to_test,
             )
             diff_browsers.new_session(set(fonts_before), set(fonts_after))
-            diff_browsers.diff_view("waterfall")
+            diff_browsers.diff_view("waterfall", styles=styles)
             info = os.path.join(out, "info.json")
             json.dump(diff_browsers.stats, open(info, "w"))
-            diff_browsers.diff_view("glyphs_all", pt=16)
+            diff_browsers.diff_view("glyphs_all", pt=16, styles=styles)
 
     def fontbakery(self):
         logger.info("Running Fontbakery")
-        out = os.path.join(self._out, "Fontbakery")
+        out = os.path.join(self.out, "Fontbakery")
         mkdir(out)
         cmd = (
             ["fontbakery", "check-googlefonts", "-l", "WARN"]
-            + [f.reader.file.name for f in self._fonts]
+            + [f.reader.file.name for f in self.fonts]
             + ["-C"]
             + ["--ghmarkdown", os.path.join(out, "report.md")]
         )
@@ -212,14 +218,14 @@ class FontQA:
 
     def plot_glyphs(self):
         logger.info("Running plot glyphs")
-        out = os.path.join(self._out, "plot_glyphs")
+        out = os.path.join(self.out, "plot_glyphs")
         mkdir(out)
-        fonts = [f.reader.file.name for f in self._fonts]
+        fonts = [f.reader.file.name for f in self.fonts]
         for font in fonts:
             font_filename = os.path.basename(font)[:-4]
             dfont = DFont(font)
             if dfont.is_variable:
-                for coords in dfont.instances_coordinates:
+                for _, coords in dfont.instances_coordinates.items():
                     dfont.set_variations(coords)
                     img_out = os.path.join(
                         out,
@@ -247,24 +253,23 @@ class FontQA:
                     "See https://github.com/googlefonts/"
                     "diffbrowsers#installation on how to add them.")
             return
-        out = os.path.join(self._out, "browser_previews")
+        out = os.path.join(self.out, "browser_previews")
         mkdir(out)
         browsers_to_test = test_browsers["vf_browsers"]
-        font_groups = self.chunkify(list(self._instances.values()), 4)
-        name_groups = self.chunkify(list(self._instances.keys()), 4)
+        font_groups = self.chunkify(list([i['filename'] for i in self.instances.values()]), 4)
+        name_groups = self.chunkify(list(self.instances.keys()), 4)
         for name_group, font_group in zip(name_groups, font_groups):
-            name = [os.path.basename(f)[:-4] for f in font_group]
             name = "_".join(sorted(name_group))
             diff_browsers = DiffBrowsers(
                 auth=self._bstack_auth,
-            gfr_instance_url=FontQA.GFR_URL,
-            dst_dir=os.path.join(out, name),
-            browsers=browsers_to_test,
-            gfr_is_local=False,
+                gfr_instance_url=FontQA.GFR_URL,
+                dst_dir=os.path.join(out, name),
+                browsers=browsers_to_test,
+                gfr_is_local=False,
             )
             diff_browsers.new_session(font_group, font_group)
-            diff_browsers.diff_view("waterfall")
-            diff_browsers.diff_view("glyphs_all", pt=15)
+            diff_browsers.diff_view("waterfall", styles=name_group)
+            diff_browsers.diff_view("glyphs_all", styles=name_group, pt=15)
 
     def googlefonts_upgrade(self):
         self.fontbakery()
@@ -279,7 +284,7 @@ class FontQA:
     def post_to_github(self, url):
         """Zip and post the check results as a comment to the github
         issue or pr."""
-        report_zip = shutil.make_archive(self._out, "zip", self._out)
+        report_zip = shutil.make_archive(self.out, "zip", self.out)
         uuid = str(uuid4())
         zip_url = self._post_media_to_gfr([report_zip], uuid)
 
@@ -287,7 +292,7 @@ class FontQA:
         repo_slug = "{}/{}".format(url_split[3], url_split[4])
         pull = url_split[-1] if "pull" in url else None
 
-        fontbakery_report = os.path.join(self._out, "Fontbakery", "report.md")
+        fontbakery_report = os.path.join(self.out, "Fontbakery", "report.md")
         if os.path.isfile(fontbakery_report):
             with open(fontbakery_report, "r") as fb:
                 msg = "{}\n\n## Diff images: [{}]({})".format(
@@ -358,25 +363,32 @@ def main():
 
     font_group = parser.add_argument_group(title="Fonts to qa")
     font_input_group = font_group.add_mutually_exclusive_group(required=True)
-    font_input_group.add_argument("-f", "--fonts", nargs="+")
-    font_input_group.add_argument("-pr", "--pull-request")
-    font_input_group.add_argument("-gh", "--github-dir")
-    font_input_group.add_argument("-gf", "--googlefonts")
+    font_input_group.add_argument("-f", "--fonts", nargs="+",
+        help="Paths to fonts")
+    font_input_group.add_argument("-pr", "--pull-request",
+        help="Get fonts from a Github pull request")
+    font_input_group.add_argument("-gh", "--github-dir",
+        help="Get fonts from a Github directory")
+    font_input_group.add_argument("-gf", "--googlefonts",
+        help="Get fonts from Google Fonts")
 
     font_before_group = parser.add_argument_group(title="Fonts before input")
     font_before_input_group = font_before_group.add_mutually_exclusive_group(
         required=False
     )
     font_before_input_group.add_argument(
-        "-fb", "--fonts-before", nargs="+", help="Fonts before paths"
+        "-fb", "--fonts-before", nargs="+",
+        help="Paths to previous fonts"
     )
-    font_before_input_group.add_argument("-prb", "--pull-request-before")
-    font_before_input_group.add_argument("-ghb", "--github-dir-before")
+    font_before_input_group.add_argument("-prb", "--pull-request-before",
+        help="Get previous fonts from a Github pull request")
+    font_before_input_group.add_argument("-ghb", "--github-dir-before",
+        help="Get previous fonts from a Github dir")
     font_before_input_group.add_argument(
         "-gfb",
         "--googlefonts-before",
         action="store_true",
-        help="Diff against GoogleFonts instead of fonts_before",
+        help="Get previous fonts from Google Fonts",
     )
 
     check_group = parser.add_argument_group(title="QA checks")
@@ -445,47 +457,67 @@ def main():
         raise Exception("Terminating. No checks selected. Run gftools qa "
                         "--help to see all possible commands.")
 
+
+    # Retrieve fonts and store in out dir
+    mkdir(args.out)
+    fonts_dir = os.path.join(args.out, "fonts")
+    mkdir(fonts_dir)
     if args.fonts:
+        [shutil.copy(f, fonts_dir) for f in args.fonts]
         fonts = args.fonts
     elif args.pull_request:
-        fonts = download_files_in_github_pr(args.pull_request, tempfile.mkdtemp())
+        fonts = download_files_in_github_pr(
+            args.pull_request,
+            fonts_dir,
+            ignore_static_dir=False,
+        )
         if not fonts:
             logger.info("No fonts found in pull request. Skipping")
             return
     elif args.github_dir:
-        fonts = download_files_in_github_dir(args.github_dir, tempfile.mkdtemp())
+        fonts = download_files_in_github_dir(args.github_dir, fonts_dir)
         if not fonts:
             logger.info("No fonts found in github dir. Skipping")
             return
     elif args.googlefonts:
-        fonts = download_family_from_Google_Fonts(args.googlefonts, tempfile.mkdtemp())
+        fonts = download_family_from_Google_Fonts(args.googlefonts, fonts_dir)
 
     if args.filter_fonts:
         re_filter = re.compile(args.filter_fonts)
         fonts = [f for f in fonts if re_filter.search(f)]
 
-    ttfonts = [TTFont(f) for f in fonts if f.endswith((".ttf", ".otf"))]
+    ttfonts = [TTFont(f) for f in fonts if f.endswith((".ttf", ".otf"))
+               and "static" not in f]
     family_name = family_name_from_fonts(ttfonts)
     family_on_gf = Google_Fonts_has_family(family_name)
 
+    # Retrieve fonts_before and store in out dir
     fonts_before = None
+    if any([args.fonts_before, args.pull_request_before, args.github_dir_before]) or \
+           (args.googlefonts_before and family_on_gf):
+        fonts_before_dir = os.path.join(args.out, "fonts_before")
+        mkdir(fonts_before_dir, overwrite=False)
     if args.fonts_before:
+        [shutil.copy(f, fonts_before_dir) for f in args.fonts_before]
         fonts_before = args.fonts_before
     elif args.pull_request_before:
         fonts_before = download_files_in_github_pr(
-            args.pull_request_before, tempfile.mkdtemp()
+            args.pull_request_before,
+            fonts_before_dir,
+            ignore_static_dir=False
         )
     elif args.github_dir_before:
         fonts_before = download_files_in_github_dir(
-            args.github_dir_before, tempfile.mkdtemp()
+            args.github_dir_before, fonts_before_dir
         )
     elif args.googlefonts_before and family_on_gf:
         fonts_before = download_family_from_Google_Fonts(
-            family_name, tempfile.mkdtemp()
+            family_name, fonts_before_dir
         )
 
     if fonts_before:
-        ttfonts_before = [TTFont(f) for f in fonts_before if f.endswith((".ttf", ".otf"))]
+        ttfonts_before = [TTFont(f) for f in fonts_before if f.endswith((".ttf", ".otf"))
+                          and "static" not in f]
         qa = FontQA(ttfonts, ttfonts_before, args.out)
     else:
         qa = FontQA(ttfonts, out=args.out)

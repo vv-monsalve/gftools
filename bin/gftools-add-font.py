@@ -31,12 +31,12 @@ Generating a METADATA.pb file for a new family:
 1. Determine the family's license type, ofl, ufl or apache
 2. Create a new folder under the license type directory
 3. Name the folder so it's the family name, all lowercase and no spaces.
-4. Run the following: python add_font.py /path/to/new/family
+4. Run the following: gftools add-font /path/to/new/family
 5. Update the category field in the generated METADATA.pb file.
 
 Generating a METADATA.pb file for an existing family:
 
-1. run the following: python add_font.py --update /path/to/existing/family
+1. run the following: gftools add-font /path/to/existing/family
 """
 from __future__ import print_function
 from functools import cmp_to_key
@@ -61,9 +61,10 @@ FLAGS = flags.FLAGS
 flags.DEFINE_integer('min_pct', 50,
                      'What percentage of subset codepoints have to be supported'
                      ' for a non-ext subset.')
-flags.DEFINE_integer('min_pct_ext', 10,
-                     'What percentage of subset codepoints have to be supported'
-                     ' for a -ext subset.')
+# if a single glyph from the 81 glyphs in *-ext_unique-glyphs.nam file is present, the font can have the "ext" subset
+flags.DEFINE_float('min_pct_ext', 0.01,
+                   'What percentage of subset codepoints have to be supported'
+                   ' for a -ext subset.')
 
 
 def _FileFamilyStyleWeights(fontdir):
@@ -107,7 +108,7 @@ def _MakeMetadata(fontdir, is_new):
     fontdir: Directory containing font files for which we want metadata.
     is_new: Whether this is an existing or new family.
   Returns:
-    OrderedDict of a complete METADATA.pb structure.
+    A fonts_pb2.FamilyProto message, the METADATA.pb structure.
   Raises:
     RuntimeError: If the variable font axes info differs between font files of
     same family.
@@ -115,14 +116,15 @@ def _MakeMetadata(fontdir, is_new):
   file_family_style_weights = _FileFamilyStyleWeights(fontdir)
 
   first_file = file_family_style_weights[0].file
-  subsets = ['menu'] + [s[0] for s in fonts.SubsetsInFont(first_file,
-                                                          FLAGS.min_pct,
-                                                          FLAGS.min_pct_ext)]
   old_metadata_file = os.path.join(fontdir, 'METADATA.pb')
   font_license = fonts.LicenseFromPath(fontdir)
 
   metadata = fonts_pb2.FamilyProto()
   metadata.name = file_family_style_weights[0].family
+
+  subsets_in_font = [s[0] for s in fonts.SubsetsInFont(
+    first_file, FLAGS.min_pct, FLAGS.min_pct_ext
+  )]
 
   if not is_new:
     old_metadata = fonts_pb2.FamilyProto()
@@ -131,10 +133,12 @@ def _MakeMetadata(fontdir, is_new):
       metadata.designer = old_metadata.designer
       metadata.category = old_metadata.category
       metadata.date_added = old_metadata.date_added
+      subsets = set(old_metadata.subsets) | set(subsets_in_font)
   else:
     metadata.designer = 'UNKNOWN'
     metadata.category = 'SANS_SERIF'
     metadata.date_added = time.strftime('%Y-%m-%d')
+    subsets = ['menu'] + subsets_in_font
 
   metadata.license = font_license
   subsets = sorted(subsets)
@@ -251,7 +255,7 @@ def main(argv):
     is_new = False
 
   metadata = _MakeMetadata(fontdir, is_new)
-  text_proto = text_format.MessageToString(metadata)
+  text_proto = text_format.MessageToString(metadata, as_utf8=True)
 
   desc = os.path.join(fontdir, 'DESCRIPTION.en_us.html')
   if os.path.isfile(desc):
